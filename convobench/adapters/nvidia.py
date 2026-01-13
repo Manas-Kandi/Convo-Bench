@@ -13,9 +13,17 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Optional
 
+from dotenv import load_dotenv
+
 from convobench.adapters.base import AdapterConfig, BaseAdapter
+
+# Load .env file from project root
+_env_path = Path(__file__).parent.parent.parent / ".env"
+if _env_path.exists():
+    load_dotenv(_env_path)
 from convobench.core.agent import AgentConfig
 
 
