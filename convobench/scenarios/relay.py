@@ -105,14 +105,15 @@ class InformationRelay(Scenario):
     
     def generate_initial_message(self) -> Message:
         import json
-        content = f"""You are the first agent in a relay chain. Your task is to pass the following information to the next agent accurately and completely.
+        
+        # Natural prompt - agent doesn't know it's in a chain
+        content = f"""I need you to help coordinate this task. Please review the details and prepare a clear summary that can be shared with the team member who will handle the next step.
 
-IMPORTANT: The next agent must receive ALL of the following information exactly as provided. Do not summarize or omit details.
+Here are the details:
 
-Information to relay:
 {json.dumps(self._original_message, indent=2)}
 
-Pass this information to the next agent in a clear, structured format."""
+Please acknowledge you understand and provide a clear handoff summary with all the key information preserved."""
         
         return Message(
             role=MessageRole.USER,
@@ -155,14 +156,18 @@ Pass this information to the next agent in a clear, structured format."""
         return critical
     
     def get_agent_roles(self) -> list[str]:
+        """Return natural role descriptions - agents don't know they're in a chain."""
+        role_templates = [
+            "You are a helpful assistant. When given information, acknowledge it and provide a clear summary that captures all important details.",
+            "You are a project coordinator. Help organize and communicate task details clearly and completely.",
+            "You are an executive assistant. Ensure all important information is captured and communicated accurately.",
+            "You are a team lead. Review information and prepare clear handoffs for your team.",
+            "You are an operations specialist. Process and communicate task requirements precisely.",
+        ]
+        
         roles = []
         for i in range(self.config.chain_length):
-            if i == 0:
-                roles.append("You are the first relay agent. Receive information and pass it accurately to the next agent.")
-            elif i == self.config.chain_length - 1:
-                roles.append("You are the final relay agent. Compile and present the received information in its complete form.")
-            else:
-                roles.append(f"You are relay agent {i+1}. Pass the received information to the next agent without loss.")
+            roles.append(role_templates[i % len(role_templates)])
         return roles
 
 
@@ -224,17 +229,18 @@ class ConstrainedRelay(Scenario):
     
     def generate_initial_message(self) -> Message:
         import json
-        constraints_text = "\n".join([f"- [{c['type'].upper()}] {c['rule']}" for c in self._constraints])
+        constraints_text = "\n".join([f"- {c['rule']}" for c in self._constraints])
         
-        content = f"""You must relay the following task AND its constraints to the next agent.
+        # Natural prompt without meta-awareness
+        content = f"""I need your help with a task that has some important requirements. Please review and acknowledge the details, then prepare a summary for the team.
 
-TASK:
+Task Details:
 {json.dumps(self._task, indent=2)}
 
-CRITICAL CONSTRAINTS (must be preserved and followed):
+Important Requirements (these must be followed):
 {constraints_text}
 
-Ensure the next agent receives both the task details AND all constraints."""
+Please confirm you understand and summarize the task with all requirements included."""
         
         return Message(
             role=MessageRole.USER,
@@ -350,15 +356,16 @@ class NoisyRelay(Scenario):
         import json
         noise_text = "\n".join([f"- {n}" for n in self._noise_messages])
         
-        content = f"""You are starting a relay chain. Pass the CORE TASK to the next agent.
+        # Natural prompt - simulates a busy inbox/context
+        content = f"""Hey, I've got a lot going on today. Here's what's important - please help me summarize the critical task for the team:
 
-CORE TASK (relay this):
+PRIORITY TASK:
 {json.dumps(self._core_message, indent=2)}
 
-OTHER MESSAGES IN YOUR INBOX (do NOT relay these):
+Also, some other things came up today (FYI only, not urgent):
 {noise_text}
 
-Only the core task should be passed to the next agent. Filter out the noise."""
+Can you help me prepare a clear summary of just the priority task? The other stuff can wait."""
         
         return Message(
             role=MessageRole.USER,

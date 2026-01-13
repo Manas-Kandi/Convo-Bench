@@ -189,18 +189,62 @@ class AgentChain:
 
 
 class MockAgent(Agent):
-    """A mock agent for testing purposes."""
+    """
+    A mock agent for testing purposes.
+    
+    By default, simulates realistic relay behavior by echoing/summarizing
+    the input message with slight variations to test information preservation.
+    """
     
     def __init__(
         self,
         agent_id: str,
         responses: Optional[list[str]] = None,
+        simulate_relay: bool = True,
         **kwargs,
     ):
         config = AgentConfig(model="mock", provider="mock")
         super().__init__(agent_id, config, **kwargs)
-        self.responses = responses or ["Mock response"]
+        self.responses = responses
+        self.simulate_relay = simulate_relay
         self._response_index = 0
+    
+    def _simulate_relay_response(self, input_content: str) -> str:
+        """Simulate a realistic relay response that preserves most information."""
+        import random
+        
+        # Acknowledgment phrases
+        acks = [
+            "Understood. Here's the information:",
+            "Got it. Passing along the details:",
+            "Acknowledged. The key information is:",
+            "I've reviewed this. Here's the summary:",
+            "Noted. Here are the details to share:",
+        ]
+        
+        # For relay scenarios, echo most of the content with slight reformatting
+        lines = input_content.strip().split('\n')
+        
+        # Find the main content (skip meta instructions)
+        content_start = 0
+        for i, line in enumerate(lines):
+            if '{' in line or 'Task' in line or 'PRIORITY' in line:
+                content_start = i
+                break
+        
+        # Extract the core content
+        core_content = '\n'.join(lines[content_start:])
+        
+        # Simulate slight information loss (realistic for benchmarking)
+        if random.random() < 0.1:  # 10% chance of minor omission
+            core_lines = core_content.split('\n')
+            if len(core_lines) > 5:
+                # Remove a random non-critical line
+                idx = random.randint(2, len(core_lines) - 2)
+                core_lines.pop(idx)
+                core_content = '\n'.join(core_lines)
+        
+        return f"{random.choice(acks)}\n\n{core_content}"
     
     async def process(
         self,
@@ -209,8 +253,14 @@ class MockAgent(Agent):
     ) -> tuple[Message, list[Action]]:
         self.state.add_message(message)
         
-        response_text = self.responses[self._response_index % len(self.responses)]
-        self._response_index += 1
+        # Use provided responses if available, otherwise simulate relay
+        if self.responses:
+            response_text = self.responses[self._response_index % len(self.responses)]
+            self._response_index += 1
+        elif self.simulate_relay:
+            response_text = self._simulate_relay_response(message.content)
+        else:
+            response_text = "Mock response"
         
         response = Message(
             role=MessageRole.ASSISTANT,

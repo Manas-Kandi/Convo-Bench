@@ -9,6 +9,7 @@ import { ConversationView } from '@/components/ConversationView';
 import { EvaluationPanel } from '@/components/EvaluationPanel';
 import { RunProgress } from '@/components/RunProgress';
 import { ConfigPanel } from '@/components/ConfigPanel';
+import { DegradationChart } from '@/components/DegradationChart';
 import {
   fetchScenarios,
   fetchModels,
@@ -74,15 +75,27 @@ export default function Home() {
     let ws: WebSocket | null = null;
     let lastUpdateIndex = 0;
 
+    // Track which steps we've already processed to avoid duplicates
+    const processedSteps = new Set<string>();
+    const processedEvals = new Set<number>();
+
     // Process updates from either WebSocket or polling
     const processUpdate = (data: any) => {
       if (data.type === 'progress') {
         setProgress(data.progress);
         setCurrentRun(data.run);
       } else if (data.type === 'step') {
-        setSteps((prev) => [...prev, data]);
+        // Create unique key to prevent duplicates
+        const stepKey = `${data.run}-${data.step}-${data.agent_id}`;
+        if (!processedSteps.has(stepKey)) {
+          processedSteps.add(stepKey);
+          setSteps((prev) => [...prev, data]);
+        }
       } else if (data.type === 'evaluation') {
-        setEvaluations((prev) => [...prev, data]);
+        if (!processedEvals.has(data.run)) {
+          processedEvals.add(data.run);
+          setEvaluations((prev) => [...prev, data]);
+        }
       } else if (data.type === 'complete') {
         setStatus('completed');
         setProgress(100);
@@ -318,8 +331,12 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Evaluation */}
-            <div className="col-span-4">
+            {/* Evaluation & Metrics */}
+            <div className="col-span-4 space-y-4">
+              {/* Degradation Chart */}
+              <DegradationChart steps={steps} currentRun={currentRun} />
+              
+              {/* Evaluation */}
               <div className="bg-muted/30 border border-border rounded-lg p-4">
                 <h3 className="text-sm font-medium mb-4">Evaluation</h3>
                 <EvaluationPanel evaluations={evaluations} />

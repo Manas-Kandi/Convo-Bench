@@ -47,6 +47,43 @@ from convobench.scenarios import (
     StateSynchronization,
     ToolCoordination,
 )
+import re
+
+
+def calculate_preservation_metrics(original: str, output: str, step_number: int) -> dict:
+    """Calculate information preservation metrics between original and output."""
+    
+    # Extract key elements from original
+    # Numbers (dates, amounts, counts)
+    original_numbers = set(re.findall(r'\b\d+(?:\.\d+)?(?::\d+)?\b', original))
+    output_numbers = set(re.findall(r'\b\d+(?:\.\d+)?(?::\d+)?\b', output))
+    
+    # Key terms (capitalized words, quoted strings)
+    original_terms = set(re.findall(r'"([^"]+)"', original))
+    output_terms = set(re.findall(r'"([^"]+)"', output))
+    
+    # Calculate preservation rates
+    number_preserved = len(original_numbers & output_numbers)
+    number_total = len(original_numbers)
+    number_rate = number_preserved / number_total if number_total > 0 else 1.0
+    
+    term_preserved = len(original_terms & output_terms)
+    term_total = len(original_terms)
+    term_rate = term_preserved / term_total if term_total > 0 else 1.0
+    
+    # Content length ratio (detect significant truncation)
+    length_ratio = len(output) / len(original) if len(original) > 0 else 0
+    
+    # Overall preservation score
+    overall = (number_rate * 0.4 + term_rate * 0.4 + min(length_ratio, 1.0) * 0.2)
+    
+    return {
+        "step": step_number,
+        "numbers_preserved": f"{number_preserved}/{number_total}",
+        "terms_preserved": f"{term_preserved}/{term_total}",
+        "length_ratio": round(length_ratio, 2),
+        "preservation_score": round(overall * 100, 1),
+    }
 
 app = FastAPI(title="ConvoBench API", version="0.1.0")
 
@@ -284,12 +321,23 @@ async def execute_run(run_id: str, config: RunConfig):
         scenario = SCENARIO_MAP[config.scenario.scenario_type](config.scenario)
         instance = scenario.create_instance()
         
-        # Create agents
+        # Create agents with proper relay-focused system prompts
         num_agents = config.scenario.chain_length
+        
+        # Role descriptions that encourage information preservation without meta-awareness
+        relay_roles = [
+            "You are a detail-oriented assistant. When given information, your job is to understand it fully and communicate it clearly to others. Preserve all specific details like names, numbers, dates, and requirements.",
+            "You are a communications specialist. Your role is to receive information and pass it along accurately. Focus on maintaining the integrity of all details, especially numerical values and specific requirements.",
+            "You are a project coordinator. When you receive task information, summarize it clearly while preserving ALL critical details. Do not take action - just prepare the information for handoff.",
+            "You are an executive assistant. Your job is to process information and prepare clear summaries. Maintain all specifics - dates, numbers, names, and constraints must be preserved exactly.",
+            "You are a reliable information handler. When given details, acknowledge them and prepare a complete summary. Every specific detail matters - preserve them all.",
+        ]
+        
         if config.model == "mock":
             agents = create_mock_agents(num_agents)
         else:
-            agents = create_nvidia_agents(num_agents, model=config.model)
+            role_descs = [relay_roles[i % len(relay_roles)] for i in range(num_agents)]
+            agents = create_nvidia_agents(num_agents, model=config.model, role_descriptions=role_descs)
         
         # Run multiple times
         for run_idx in range(config.num_runs):
@@ -325,15 +373,28 @@ async def execute_run(run_id: str, config: RunConfig):
             run_state["traces"].append(trace_data)
             
             # Broadcast each step with small delay for UI
+            # Also track information preservation metrics
+            original_content = instance.initial_message.content
+            
             for step in trace.steps:
+                output_content = step.output_message.content if step.output_message else ""
+                
+                # Calculate simple preservation metrics
+                preservation_metrics = calculate_preservation_metrics(
+                    original_content, 
+                    output_content,
+                    step.step_number
+                )
+                
                 await broadcast_update(run_id, {
                     "type": "step",
                     "run": run_idx + 1,
                     "step": step.step_number,
                     "agent_id": step.agent_id,
                     "input": step.input_message.content[:500] if step.input_message else "",
-                    "output": step.output_message.content[:500] if step.output_message else "",
+                    "output": output_content[:500],
                     "duration_ms": step.duration_ms,
+                    "metrics": preservation_metrics,
                 })
                 await asyncio.sleep(0.1)  # Small delay for UI updates
             
