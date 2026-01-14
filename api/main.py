@@ -607,6 +607,57 @@ async def list_runs():
     return {"runs": runs}
 
 
+@app.post("/sweep")
+async def trigger_sweep():
+    """Trigger a comprehensive benchmark sweep in the background.
+
+    The sweep runs all scenario × baseline × model permutations and stores
+    results in the run store. Progress can be polled via /sweep/{sweep_id}.
+    """
+    import subprocess
+    import sys
+
+    sweep_id = f"sweep_{uuid4().hex[:8]}"
+    output_path = f"results/{sweep_id}.json"
+
+    # Launch CLI sweep in background process
+    subprocess.Popen(
+        [sys.executable, "cli.py", "sweep", "--output", output_path],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    return {"sweep_id": sweep_id, "status": "started", "output_path": output_path}
+
+
+@app.get("/sweeps")
+async def list_sweeps():
+    """List completed sweep result files."""
+    from pathlib import Path
+
+    results_dir = Path("results")
+    if not results_dir.exists():
+        return {"sweeps": []}
+
+    sweeps = []
+    for f in results_dir.glob("sweep_*.json"):
+        sweeps.append({"sweep_id": f.stem, "path": str(f)})
+
+    return {"sweeps": sorted(sweeps, key=lambda x: x["sweep_id"], reverse=True)}
+
+
+@app.get("/sweeps/{sweep_id}")
+async def get_sweep(sweep_id: str):
+    """Get results for a specific sweep."""
+    from pathlib import Path
+
+    path = Path(f"results/{sweep_id}.json")
+    if not path.exists():
+        raise HTTPException(404, "Sweep not found or still running")
+
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

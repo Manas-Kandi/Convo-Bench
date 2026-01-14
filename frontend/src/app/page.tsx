@@ -201,6 +201,13 @@ export default function Home() {
             <Zap className="w-5 h-5 text-accent" />
             <span className="font-semibold tracking-tight">ConvoBench</span>
           </div>
+          <a
+            href="/benchmarks"
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
+          >
+            <History className="w-4 h-4" />
+            Benchmarks
+          </a>
           {view === 'running' && (
             <button
               onClick={handleReset}
