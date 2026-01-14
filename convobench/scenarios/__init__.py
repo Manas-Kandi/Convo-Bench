@@ -21,6 +21,12 @@ from convobench.scenarios.adversarial import (
     ConstraintViolation,
     ErrorInjection,
 )
+from convobench.scenarios.realism import (
+    PartialObservabilityReconciliation,
+    InterruptDrivenPlanning,
+    ProtocolHandoffExperiment,
+    FailureModeSuite,
+)
 
 __all__ = [
     "Scenario",
@@ -37,4 +43,8 @@ __all__ = [
     "AdversarialRelay",
     "ConstraintViolation",
     "ErrorInjection",
+    "PartialObservabilityReconciliation",
+    "InterruptDrivenPlanning",
+    "ProtocolHandoffExperiment",
+    "FailureModeSuite",
 ]

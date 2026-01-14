@@ -1,19 +1,26 @@
-"""ConvoBench: Multi-Agent Collaboration Benchmark."""
+"""ConvoBench: Multi-Agent Collaboration Benchmark Framework."""
 
-from convobench.core.engine import WorkflowEngine
-from convobench.core.agent import Agent, AgentConfig
-from convobench.core.environment import Environment
-from convobench.core.metrics import MetricsCollector
+from convobench.bench import ConvoBench, BenchmarkConfig, BenchmarkResult
+from convobench.core.agent import Agent, MockAgent
 from convobench.evaluation.evaluator import ExternalEvaluator
-from convobench.bench import ConvoBench
+from convobench.spec import AFVariables, RunManifest, ScenarioPack
+from convobench.store import RunStore
+from convobench import baselines, reporting, leaderboard
 
 __version__ = "0.1.0"
+
 __all__ = [
     "ConvoBench",
-    "WorkflowEngine",
+    "BenchmarkConfig",
+    "BenchmarkResult",
     "Agent",
-    "AgentConfig",
-    "Environment",
-    "MetricsCollector",
+    "MockAgent",
     "ExternalEvaluator",
+    "AFVariables",
+    "RunManifest",
+    "ScenarioPack",
+    "baselines",
+    "reporting",
+    "leaderboard",
+    "RunStore",
 ]

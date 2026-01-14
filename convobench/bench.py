@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,8 @@ from convobench.core.types import WorkflowTrace
 from convobench.evaluation.analysis import ComparisonReport, StatisticalAnalyzer, generate_leaderboard
 from convobench.evaluation.evaluator import EvaluationResult, EvaluatorConfig, ExternalEvaluator
 from convobench.scenarios.base import Scenario, ScenarioInstance
+from convobench.spec import RunManifest, ScenarioPack
+from convobench.utils.versioning import get_git_commit_hash
 
 
 @dataclass
@@ -51,6 +54,8 @@ class BenchmarkResult:
     evaluations: list[EvaluationResult] = field(default_factory=list)
     aggregate_metrics: Optional[AggregateMetrics] = None
     comparison_report: Optional[ComparisonReport] = None
+    run_manifest: Optional[RunManifest] = None
+    scenario_pack: Optional[ScenarioPack] = None
     
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +67,8 @@ class BenchmarkResult:
             "num_evaluations": len(self.evaluations),
             "aggregate_metrics": self.aggregate_metrics.to_dict() if self.aggregate_metrics else None,
             "comparison_report": self.comparison_report.to_dict() if self.comparison_report else None,
+            "run_manifest": self.run_manifest.model_dump() if self.run_manifest else None,
+            "scenario_pack": self.scenario_pack.model_dump() if self.scenario_pack else None,
         }
 
 
@@ -94,6 +101,9 @@ class ConvoBench:
         scenario: Union[Scenario, list[Scenario]],
         agents: Union[list[Agent], dict[str, list[Agent]]],
         runs: Optional[int] = None,
+        *,
+        scenario_pack: Optional[ScenarioPack] = None,
+        run_manifest: Optional[RunManifest] = None,
     ) -> BenchmarkResult:
         """
         Run benchmark scenarios with specified agents.
@@ -123,7 +133,18 @@ class ConvoBench:
             config=self.config,
             scenarios=[s.scenario_id for s in scenarios],
             configurations=list(agent_configs.keys()),
+            scenario_pack=scenario_pack,
         )
+
+        if run_manifest is None:
+            # Derive a minimal manifest if not provided
+            run_manifest = RunManifest(
+                run_id=benchmark_id,
+                code_version=get_git_commit_hash(),
+                scenario_pack_version=scenario_pack.version if scenario_pack else None,
+                scenarios=(scenario_pack.scenarios if scenario_pack else []),
+            )
+        result.run_manifest = run_manifest
         
         if self.config.verbose:
             self.console.print(f"\n[bold blue]Starting ConvoBench[/bold blue]")
@@ -136,6 +157,10 @@ class ConvoBench:
         all_traces: dict[str, list[WorkflowTrace]] = {config: [] for config in agent_configs}
         all_ground_truths: list[dict[str, Any]] = []
         
+        # Deterministic seed plan (per scenario run)
+        # We derive a stable seed base from the benchmark_id unless a manifest provides one.
+        seed_base = int(uuid4().hex[:8], 16)
+
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -145,18 +170,26 @@ class ConvoBench:
             
             for scenario in scenarios:
                 task = progress.add_task(f"Running {scenario.config.name}...", total=None)
-                
-                instance = scenario.create_instance()
-                all_ground_truths.append(instance.ground_truth)
-                
+
+                # Capture ground truth per run (scenario instances can vary with seed)
+
                 for config_name, config_agents in agent_configs.items():
                     for run_idx in range(runs):
                         progress.update(task, description=f"{scenario.config.name} | {config_name} | Run {run_idx + 1}/{runs}")
+
+                        run_seed = seed_base + run_idx
+                        # Apply seed to scenario if supported
+                        if hasattr(scenario, "set_seed"):
+                            scenario.set_seed(run_seed)
+
+                        instance = scenario.create_instance()
+                        all_ground_truths.append(instance.ground_truth)
                         
                         trace = await self._run_single(
                             instance=instance,
                             agents=config_agents,
                             config_name=config_name,
+                            seed=run_seed,
                         )
                         
                         all_traces[config_name].append(trace)
@@ -215,8 +248,13 @@ class ConvoBench:
         instance: ScenarioInstance,
         agents: list[Agent],
         config_name: str,
+        *,
+        seed: Optional[int] = None,
     ) -> WorkflowTrace:
         """Run a single scenario instance."""
+        if seed is not None:
+            instance.seed = seed
+            instance.metadata["seed"] = seed
         chain = AgentChain(agents, name=config_name)
         
         engine = WorkflowEngine(
@@ -236,6 +274,8 @@ class ConvoBench:
         
         trace.metadata["config_name"] = config_name
         trace.metadata["category"] = instance.config.category
+        trace.metadata["scenario_version"] = instance.metadata.get("scenario_version")
+        trace.metadata["seed"] = instance.seed
         
         return trace
     

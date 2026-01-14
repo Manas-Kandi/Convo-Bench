@@ -33,6 +33,9 @@ from convobench.core.engine import WorkflowConfig, WorkflowEngine
 from convobench.core.metrics import MetricsCollector
 from convobench.core.types import WorkflowStatus
 from convobench.evaluation.evaluator import EvaluatorConfig, ExternalEvaluator
+from convobench.spec import AFVariables, RunManifest, ScenarioPack, ToolConfig, ScenarioRef
+from convobench.utils.versioning import get_git_commit_hash
+from convobench.store import RunStore
 from convobench.scenarios import (
     AdversarialRelay,
     CollaborativePlanning,
@@ -43,6 +46,10 @@ from convobench.scenarios import (
     HandoffScenario,
     InformationRelay,
     NoisyRelay,
+    PartialObservabilityReconciliation,
+    InterruptDrivenPlanning,
+    ProtocolHandoffExperiment,
+    FailureModeSuite,
     ResourceAllocation,
     StateSynchronization,
     ToolCoordination,
@@ -95,8 +102,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Store active runs
-active_runs: dict[str, dict] = {}
+# Persistent store + active websocket connections
+store = RunStore()
 websocket_connections: dict[str, WebSocket] = {}
 
 
@@ -114,6 +121,9 @@ class RunConfig(BaseModel):
     model: str = "mock"
     num_runs: int = 5
     evaluate: bool = True
+    af_variables: Optional[AFVariables] = None
+    tool_config: Optional[ToolConfig] = None
+    scenario_pack: Optional[ScenarioPack] = None
 
 
 class RunResponse(BaseModel):
@@ -171,6 +181,22 @@ SCENARIO_MAP = {
     "error_injection": lambda cfg: ErrorInjection(
         chain_length=cfg.chain_length,
         error_type="tool_failure",
+    ),
+    "partial_observability_reconciliation": lambda cfg: PartialObservabilityReconciliation(
+        chain_length=cfg.chain_length,
+        domain="incident",
+    ),
+    "interrupt_driven_planning": lambda cfg: InterruptDrivenPlanning(
+        num_agents=cfg.num_agents,
+        domain="project",
+    ),
+    "protocol_handoff_experiment": lambda cfg: ProtocolHandoffExperiment(
+        chain_length=cfg.chain_length,
+        protocol="structured",
+    ),
+    "failure_mode_suite": lambda cfg: FailureModeSuite(
+        chain_length=cfg.chain_length,
+        mode="spec_drift",
     ),
 }
 
@@ -256,6 +282,30 @@ async def list_scenarios():
             "category": "adversarial",
             "description": "Handle injected errors",
         },
+        {
+            "id": "partial_observability_reconciliation",
+            "name": "Partial Observability Reconciliation",
+            "category": "coordination",
+            "description": "Agents see different docs; must reconcile and flag conflicts",
+        },
+        {
+            "id": "interrupt_driven_planning",
+            "name": "Interrupt-Driven Planning",
+            "category": "planning",
+            "description": "Mid-run update forces replanning without losing constraints",
+        },
+        {
+            "id": "protocol_handoff_experiment",
+            "name": "Protocol Handoff Experiment",
+            "category": "relay",
+            "description": "Compare freeform vs structured vs checksum readback handoffs",
+        },
+        {
+            "id": "failure_mode_suite",
+            "name": "Failure Mode Suite",
+            "category": "adversarial",
+            "description": "Stress suite: silent propagation, overconfidence, spec drift",
+        },
     ]
     return {"scenarios": scenarios}
 
@@ -290,17 +340,26 @@ async def create_run(config: RunConfig):
     if config.scenario.scenario_type not in SCENARIO_MAP:
         raise HTTPException(400, f"Unknown scenario: {config.scenario.scenario_type}")
     
-    # Store run state
-    active_runs[run_id] = {
-        "id": run_id,
-        "config": config.model_dump(),
-        "status": "pending",
-        "created_at": datetime.utcnow().isoformat(),
-        "traces": [],
-        "evaluations": [],
-        "messages": [],
-        "progress": 0,
-    }
+    created_at = datetime.utcnow().isoformat()
+
+    # Attach a run manifest for reproducibility
+    manifest = RunManifest(
+        run_id=run_id,
+        code_version=get_git_commit_hash(),
+        scenario_pack_version=(config.scenario_pack.version if config.scenario_pack else None),
+        af_variables=config.af_variables or (config.scenario_pack.af_variables if config.scenario_pack else AFVariables()),
+        tool_config=config.tool_config or ToolConfig(),
+        scenarios=(config.scenario_pack.scenarios if config.scenario_pack else [ScenarioRef(scenario_type=config.scenario.scenario_type, params=config.scenario.model_dump())]),
+        model_ids=[config.model],
+    )
+    # Persist run record
+    store.upsert_run(
+        run_id=run_id,
+        created_at=created_at,
+        status="pending",
+        config_json=config.model_dump(),
+        manifest_json=manifest.model_dump(),
+    )
     
     # Start run in background
     asyncio.create_task(execute_run(run_id, config))
@@ -310,8 +369,16 @@ async def create_run(config: RunConfig):
 
 async def execute_run(run_id: str, config: RunConfig):
     """Execute a benchmark run."""
-    run_state = active_runs[run_id]
-    run_state["status"] = "running"
+    stored = store.get_run(run_id)
+    if stored is None:
+        return
+    store.upsert_run(
+        run_id=run_id,
+        created_at=stored.created_at,
+        status="running",
+        config_json=stored.config_json,
+        manifest_json=stored.manifest_json,
+    )
     
     # Wait for WebSocket to connect
     await asyncio.sleep(0.5)
@@ -341,12 +408,12 @@ async def execute_run(run_id: str, config: RunConfig):
         
         # Run multiple times
         for run_idx in range(config.num_runs):
-            run_state["progress"] = int((run_idx / config.num_runs) * 100)
+            progress_pct = int((run_idx / config.num_runs) * 100)
             await broadcast_update(run_id, {
                 "type": "progress",
                 "run": run_idx + 1,
                 "total": config.num_runs,
-                "progress": run_state["progress"],
+                "progress": progress_pct,
             })
             
             # Reset for new run
@@ -370,7 +437,11 @@ async def execute_run(run_id: str, config: RunConfig):
             
             # Store trace
             trace_data = trace.to_dict()
-            run_state["traces"].append(trace_data)
+            store.add_trace(run_id, str(trace.workflow_id), trace.scenario_id, trace_data)
+
+            # Persist deterministic metrics snapshot per workflow
+            m = MetricsCollector().collect_from_trace(trace)
+            store.add_metrics(run_id, str(trace.workflow_id), trace.scenario_id, m.to_dict())
             
             # Broadcast each step with small delay for UI
             # Also track information preservation metrics
@@ -405,7 +476,13 @@ async def execute_run(run_id: str, config: RunConfig):
                         config=EvaluatorConfig(model="gpt-4", provider="openai")
                     )
                     eval_result = await evaluator.evaluate(trace, instance.ground_truth)
-                    run_state["evaluations"].append(eval_result.to_dict())
+                    store.add_evaluation(
+                        run_id,
+                        str(trace.workflow_id),
+                        trace.scenario_id,
+                        evaluator.config.model,
+                        eval_result.to_dict(),
+                    )
                     
                     await broadcast_update(run_id, {
                         "type": "evaluation",
@@ -421,23 +498,48 @@ async def execute_run(run_id: str, config: RunConfig):
                         "error": str(e),
                     })
         
-        run_state["status"] = "completed"
-        run_state["progress"] = 100
+        stored2 = store.get_run(run_id)
+        if stored2 is not None:
+            store.upsert_run(
+                run_id=run_id,
+                created_at=stored2.created_at,
+                status="completed",
+                config_json=stored2.config_json,
+                manifest_json=stored2.manifest_json,
+            )
         await broadcast_update(run_id, {"type": "complete", "status": "completed"})
         
     except Exception as e:
-        run_state["status"] = "failed"
-        run_state["error"] = str(e)
+        stored3 = store.get_run(run_id)
+        if stored3 is not None:
+            cfg = stored3.config_json
+            cfg["error"] = str(e)
+            store.upsert_run(
+                run_id=run_id,
+                created_at=stored3.created_at,
+                status="failed",
+                config_json=cfg,
+                manifest_json=stored3.manifest_json,
+            )
         await broadcast_update(run_id, {"type": "error", "error": str(e)})
 
 
 async def broadcast_update(run_id: str, data: dict):
     """Broadcast update to connected WebSocket clients."""
-    # Also store in run state for polling fallback
-    if run_id in active_runs:
-        if "updates" not in active_runs[run_id]:
-            active_runs[run_id]["updates"] = []
-        active_runs[run_id]["updates"].append(data)
+    # Persist updates into run config_json for polling fallback
+    stored = store.get_run(run_id)
+    if stored is not None:
+        cfg = stored.config_json
+        updates = cfg.get("updates", [])
+        updates.append(data)
+        cfg["updates"] = updates
+        store.upsert_run(
+            run_id=run_id,
+            created_at=stored.created_at,
+            status=stored.status,
+            config_json=cfg,
+            manifest_json=stored.manifest_json,
+        )
     
     if run_id in websocket_connections:
         ws = websocket_connections[run_id]
@@ -450,25 +552,35 @@ async def broadcast_update(run_id: str, data: dict):
 @app.get("/runs/{run_id}")
 async def get_run(run_id: str):
     """Get run status and results."""
-    if run_id not in active_runs:
+    stored = store.get_run(run_id)
+    if stored is None:
         raise HTTPException(404, "Run not found")
-    return active_runs[run_id]
+    return {
+        "id": stored.run_id,
+        "created_at": stored.created_at,
+        "status": stored.status,
+        "config": stored.config_json,
+        "run_manifest": stored.manifest_json,
+        "traces": store.list_traces(run_id),
+        "evaluations": store.list_evaluations(run_id),
+        "metrics": store.list_metrics(run_id),
+    }
 
 
 @app.get("/runs/{run_id}/traces")
 async def get_traces(run_id: str):
     """Get all traces for a run."""
-    if run_id not in active_runs:
+    if store.get_run(run_id) is None:
         raise HTTPException(404, "Run not found")
-    return {"traces": active_runs[run_id]["traces"]}
+    return {"traces": store.list_traces(run_id)}
 
 
 @app.get("/runs/{run_id}/evaluations")
 async def get_evaluations(run_id: str):
     """Get all evaluations for a run."""
-    if run_id not in active_runs:
+    if store.get_run(run_id) is None:
         raise HTTPException(404, "Run not found")
-    return {"evaluations": active_runs[run_id]["evaluations"]}
+    return {"evaluations": store.list_evaluations(run_id)}
 
 
 @app.websocket("/ws/{run_id}")
@@ -491,17 +603,8 @@ async def websocket_endpoint(websocket: WebSocket, run_id: str):
 @app.get("/runs")
 async def list_runs():
     """List all runs."""
-    runs = []
-    for run_id, run_data in active_runs.items():
-        runs.append({
-            "id": run_id,
-            "status": run_data["status"],
-            "created_at": run_data["created_at"],
-            "scenario": run_data["config"]["scenario"]["scenario_type"],
-            "model": run_data["config"]["model"],
-            "progress": run_data.get("progress", 0),
-        })
-    return {"runs": sorted(runs, key=lambda x: x["created_at"], reverse=True)}
+    runs = store.list_runs(limit=100)
+    return {"runs": runs}
 
 
 if __name__ == "__main__":

@@ -10,6 +10,9 @@ from uuid import UUID
 import numpy as np
 
 from convobench.core.types import WorkflowTrace, WorkflowStatus
+from convobench.metrics.coordination import compute_coordination_metrics
+from convobench.metrics.degradation import constraint_metrics, entity_retention, json_structure_preservation
+from convobench.metrics.tooling import compute_tool_reliability
 
 
 @dataclass
@@ -52,6 +55,27 @@ class WorkflowMetrics:
     successful_tool_calls: int
     error_count: int
     step_metrics: list[StepMetrics] = field(default_factory=list)
+
+    # Deterministic AF metrics
+    tool_call_success_rate: Optional[float] = None
+    retry_attempts: Optional[int] = None
+    time_to_recovery_ms: Optional[float] = None
+    incorrect_tool_calls: Optional[int] = None
+    unsafe_tool_attempts: Optional[int] = None
+
+    disagreement_rate: Optional[float] = None
+    redundant_work_rate: Optional[float] = None
+    stale_state_usage_rate: Optional[float] = None
+    avg_handoff_completeness: Optional[float] = None
+
+    # Information degradation metrics
+    json_key_f1: Optional[float] = None
+    json_value_exact_match_rate: Optional[float] = None
+    names_retention: Optional[float] = None
+    dates_retention: Optional[float] = None
+    amounts_retention: Optional[float] = None
+    constraints_mentioned_rate: Optional[float] = None
+    constraints_violated: Optional[int] = None
     
     # Evaluation scores (filled by external evaluator)
     intent_preservation_score: Optional[float] = None
@@ -103,6 +127,30 @@ class WorkflowMetrics:
             "error_propagation_score": self.error_propagation_score,
             "overall_score": self.overall_score,
             "step_metrics": [s.to_dict() for s in self.step_metrics],
+            "af_metrics": {
+                "degradation": {
+                    "json_key_f1": self.json_key_f1,
+                    "json_value_exact_match_rate": self.json_value_exact_match_rate,
+                    "names_retention": self.names_retention,
+                    "dates_retention": self.dates_retention,
+                    "amounts_retention": self.amounts_retention,
+                    "constraints_mentioned_rate": self.constraints_mentioned_rate,
+                    "constraints_violated": self.constraints_violated,
+                },
+                "tool_reliability": {
+                    "tool_call_success_rate": self.tool_call_success_rate,
+                    "retry_attempts": self.retry_attempts,
+                    "time_to_recovery_ms": self.time_to_recovery_ms,
+                    "incorrect_tool_calls": self.incorrect_tool_calls,
+                    "unsafe_tool_attempts": self.unsafe_tool_attempts,
+                },
+                "coordination": {
+                    "disagreement_rate": self.disagreement_rate,
+                    "redundant_work_rate": self.redundant_work_rate,
+                    "stale_state_usage_rate": self.stale_state_usage_rate,
+                    "avg_handoff_completeness": self.avg_handoff_completeness,
+                },
+            },
         }
 
 
@@ -232,6 +280,57 @@ class MetricsCollector:
             error_count=error_count,
             step_metrics=step_metrics,
         )
+
+        # Deterministic AF metrics
+        # Degradation metrics require a ground-truth reference; we support two ways:
+        # 1) trace.metadata["ground_truth"] (preferred)
+        # 2) trace.metadata["expected_final_output"]
+        gt = trace.metadata.get("ground_truth")
+        expected = None
+        constraints = None
+        if isinstance(gt, dict):
+            expected = gt.get("expected_final_output")
+            constraints = gt.get("constraints") or gt.get("constraint_checks")
+        if expected is None:
+            expected = trace.metadata.get("expected_final_output")
+
+        # Compare expected to final output
+        final_output = ""
+        if trace.steps and trace.steps[-1].output_message:
+            final_output = trace.steps[-1].output_message.content
+
+        if expected is not None:
+            json_p = json_structure_preservation(expected, final_output)
+            if json_p is not None:
+                metrics.json_key_f1 = json_p.key_f1
+                metrics.json_value_exact_match_rate = json_p.value_exact_match_rate
+
+            exp_text = json.dumps(expected, default=str) if not isinstance(expected, str) else expected
+            ent = entity_retention(exp_text, final_output)
+            metrics.names_retention = ent["names_retention"]
+            metrics.dates_retention = ent["dates_retention"]
+            metrics.amounts_retention = ent["amounts_retention"]
+
+        # Constraint metrics: if constraints list is available, compute mention/violation
+        if isinstance(constraints, list) and constraints:
+            c = constraint_metrics([str(x) for x in constraints], final_output)
+            metrics.constraints_mentioned_rate = (
+                c.constraints_mentioned / c.constraints_total if c.constraints_total else 1.0
+            )
+            metrics.constraints_violated = c.constraints_violated
+
+        tool_m = compute_tool_reliability(trace)
+        metrics.tool_call_success_rate = tool_m.tool_call_success_rate
+        metrics.retry_attempts = tool_m.retry_attempts
+        metrics.time_to_recovery_ms = tool_m.first_failure_to_next_success_ms
+        metrics.incorrect_tool_calls = tool_m.incorrect_tool_calls
+        metrics.unsafe_tool_attempts = tool_m.unsafe_tool_attempts
+
+        coord_m = compute_coordination_metrics(trace)
+        metrics.disagreement_rate = coord_m.disagreement_rate
+        metrics.redundant_work_rate = coord_m.redundant_work_rate
+        metrics.stale_state_usage_rate = coord_m.stale_state_usage_rate
+        metrics.avg_handoff_completeness = coord_m.avg_handoff_completeness
         
         self._workflow_metrics.append(metrics)
         self._traces.append(trace)

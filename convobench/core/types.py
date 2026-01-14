@@ -144,6 +144,7 @@ class WorkflowTrace:
     """Complete trace of a workflow execution."""
     workflow_id: UUID
     scenario_id: str
+    trace_schema_version: str = "0.1"
     steps: list[WorkflowStep] = field(default_factory=list)
     status: WorkflowStatus = WorkflowStatus.PENDING
     start_time: Optional[datetime] = None
@@ -162,6 +163,7 @@ class WorkflowTrace:
     
     def to_dict(self) -> dict[str, Any]:
         return {
+            "trace_schema_version": self.trace_schema_version,
             "workflow_id": str(self.workflow_id),
             "scenario_id": self.scenario_id,
             "steps": [s.to_dict() for s in self.steps],

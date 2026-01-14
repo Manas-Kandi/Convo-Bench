@@ -191,7 +191,8 @@ class StatisticalAnalyzer:
         )
         effect_size = float(mean_diff / pooled_std) if pooled_std > 0 else 0
         
-        significant = p_value < self.significance_level
+        # Ensure a plain Python bool (scipy/numpy may return np.bool_)
+        significant = bool(p_value < self.significance_level)
         
         if significant:
             winner = config_a if mean_diff > 0 else config_b

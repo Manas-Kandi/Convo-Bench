@@ -190,8 +190,8 @@ class ConstrainedRelay(Scenario):
         self.num_constraints = num_constraints
         super().__init__(config)
         self.config.chain_length = chain_length
-        self._constraints = self._generate_constraints()
-        self._task = self._generate_task()
+        self._constraints: list[dict[str, str]] = []
+        self._task: dict[str, Any] = {}
     
     def _default_config(self) -> ScenarioConfig:
         return ScenarioConfig(
@@ -207,6 +207,7 @@ class ConstrainedRelay(Scenario):
         )
     
     def _generate_constraints(self) -> list[dict[str, str]]:
+        rng = random.Random(self._seed) if getattr(self, "_seed", None) is not None else random
         constraint_pool = [
             {"type": "confidentiality", "rule": "Do not share customer names externally"},
             {"type": "timing", "rule": "Must be completed before end of business Friday"},
@@ -217,7 +218,7 @@ class ConstrainedRelay(Scenario):
             {"type": "compliance", "rule": "Must follow GDPR data handling requirements"},
             {"type": "communication", "rule": "CC legal team on all external communications"},
         ]
-        return random.sample(constraint_pool, min(self.num_constraints, len(constraint_pool)))
+        return rng.sample(constraint_pool, min(self.num_constraints, len(constraint_pool)))
     
     def _generate_task(self) -> dict[str, Any]:
         return {
@@ -226,6 +227,12 @@ class ConstrainedRelay(Scenario):
             "deliverables": ["Summary dashboard", "Detailed breakdown", "Recommendations"],
             "deadline": "Friday, 5:00 PM EST",
         }
+
+    def create_instance(self):
+        # Ensure seed-dependent artifacts are generated after set_seed()
+        self._constraints = self._generate_constraints()
+        self._task = self._generate_task()
+        return super().create_instance()
     
     def generate_initial_message(self) -> Message:
         import json
@@ -299,8 +306,8 @@ class NoisyRelay(Scenario):
         self.noise_level = noise_level
         super().__init__(config)
         self.config.chain_length = chain_length
-        self._core_message = self._generate_core_message()
-        self._noise_messages = self._generate_noise()
+        self._core_message: dict[str, Any] = {}
+        self._noise_messages: list[str] = []
     
     def _default_config(self) -> ScenarioConfig:
         return ScenarioConfig(
@@ -334,6 +341,7 @@ class NoisyRelay(Scenario):
         }
     
     def _generate_noise(self) -> list[str]:
+        rng = random.Random(self._seed) if getattr(self, "_seed", None) is not None else random
         noise_pool = [
             "Remember to water the office plants this week.",
             "The vending machine on floor 3 is out of order.",
@@ -346,11 +354,17 @@ class NoisyRelay(Scenario):
         ]
         
         if self.noise_level == "low":
-            return random.sample(noise_pool, 2)
+            return rng.sample(noise_pool, 2)
         elif self.noise_level == "medium":
-            return random.sample(noise_pool, 4)
+            return rng.sample(noise_pool, 4)
         else:
-            return random.sample(noise_pool, 6)
+            return rng.sample(noise_pool, 6)
+
+    def create_instance(self):
+        # Ensure seed-dependent artifacts are generated after set_seed()
+        self._core_message = self._generate_core_message()
+        self._noise_messages = self._generate_noise()
+        return super().create_instance()
     
     def generate_initial_message(self) -> Message:
         import json

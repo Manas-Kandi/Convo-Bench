@@ -48,6 +48,7 @@ class ScenarioInstance:
     agents: list[Agent] = field(default_factory=list)
     ground_truth: Optional[dict[str, Any]] = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    seed: Optional[int] = None
 
 
 class Scenario(ABC):
@@ -65,6 +66,15 @@ class Scenario(ABC):
     def __init__(self, config: Optional[ScenarioConfig] = None):
         self.config = config or self._default_config()
         self._id = str(uuid4())[:8]
+        self.scenario_version: str = "0.1"
+        self._seed: Optional[int] = None
+
+    def set_seed(self, seed: Optional[int]) -> None:
+        """Set deterministic seed for scenario generation."""
+        self._seed = seed
+
+    def get_seed(self) -> Optional[int]:
+        return self._seed
     
     @property
     def scenario_id(self) -> str:
@@ -114,7 +124,9 @@ class Scenario(ABC):
             metadata={
                 "category": self.config.category,
                 "difficulty": self.config.difficulty,
+                "scenario_version": self.scenario_version,
             },
+            seed=self._seed,
         )
     
     def validate_config(self) -> list[str]:

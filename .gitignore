@@ -50,6 +50,9 @@ htmlcov/
 # Benchmark results (optional - uncomment to ignore)
 # results/
 
+# Run store DB
+results/*.db
+
 # Jupyter
 .ipynb_checkpoints/
 
